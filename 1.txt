@@ -1,0 +1,14 @@
+cd ~/Desktop/PVD/so_arm_ws
+  ./src/so_arm_viz/scripts/run_ghost_rollout.sh \
+    --strategy.type=base \
+    --policy.path=qualia-robotics/smolvla-so101-candy-63d2cc57 \
+    --policy.device=cuda \
+    --robot.type=so101_follower \
+    --robot.port=/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B41533793-if00 \
+    --robot.id=my_follower \
+    --robot.cameras="{ top: {type: opencv, index_or_path: /dev/video2, width: 
+  640, height: 480, fps: 30, fourcc: MJPG}, wrist: {type: opencv, index_or_path:
+  /dev/video4, width: 640, height: 480, fps: 30, fourcc: MJPG}}" \
+    --task="Put the black candy in the box" \
+    --duration=30 \
+    --robot.max_relative_target=10
