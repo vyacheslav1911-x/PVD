@@ -5,8 +5,8 @@ It inserts PVD physics-verified SELECTION between chunk generation and execution
 without editing any lerobot code, by:
   1. stripping the `--pvd.*` flags out of argv (draccus never sees them) and using
      them to populate the process-global PVD_RUNTIME,
-  2. patching `lerobot.policies.factory.get_policy_class` so "smolvla" resolves to
-     PVDSmolVLAPolicy (make_policy then loads the real weights into our subclass),
+  2. patching get_policy_class so the requested type ("smolvla"/"pi05") resolves to a
+     PVD subclass built by make_pvd_policy_class (imports only that policy's stack),
   3. patching `SOFollower.get_observation` to stash the live REAL observation so the
      scorer's continuity term uses the true current joint state as q0,
   4. calling the stock rollout main() with the remaining (untouched) args.
@@ -64,7 +64,7 @@ def main():
 
     pvd, rest = _extract_pvd_args(sys.argv[1:])
 
-    from pvd.pvd_policy import PVD_RUNTIME, PVDSmolVLAPolicy, PVDPi05Policy
+    from pvd.pvd_policy import PVD_RUNTIME, make_pvd_policy_class, PVD_SUPPORTED
 
     if "enabled" in pvd:
         PVD_RUNTIME.enabled = _as_bool(pvd["enabled"])
@@ -93,7 +93,7 @@ def main():
         if PVD_RUNTIME.num_samples < 1:
             sys.exit(f"[PVD] --pvd.num_samples must be ≥ 1 (got {PVD_RUNTIME.num_samples})")
 
-    # ---- patch: make the rollout build PVDSmolVLAPolicy ----
+    # ---- patch: make the rollout build the PVD subclass (lazily, per policy type) ----
     # CRITICAL: the rollout's context.py did `from lerobot.policies import
     # get_policy_class`, so it holds its OWN reference to the function. Patching only
     # `factory.get_policy_class` is a NO-OP for the rollout (that was the bug where PVD
@@ -104,22 +104,20 @@ def main():
     import lerobot.rollout.context as rollout_context
     _orig_get_cls = factory.get_policy_class
 
-    # dispatch by policy type; each maps to its PVD subclass
-    _PVD_CLASSES = {"smolvla": PVDSmolVLAPolicy}
-    if PVDPi05Policy is not None:
-        _PVD_CLASSES["pi05"] = PVDPi05Policy
-
+    # Dispatch by policy type. make_pvd_policy_class imports ONLY the requested policy's
+    # stack (never both), and returns None for unsupported types → stock class. This is
+    # the fix for the disabled-path OOM: for a pi0.5 run we no longer import the SmolVLA
+    # backbone (nor the scorer), so the process footprint matches the plain rollout.
     def _patched_get_cls(name):
-        if name in _PVD_CLASSES:
-            return _PVD_CLASSES[name]
-        return _orig_get_cls(name)
+        cls = make_pvd_policy_class(name)
+        return cls if cls is not None else _orig_get_cls(name)
 
     rollout_context.get_policy_class = _patched_get_cls   # the one that matters
     policies_pkg.get_policy_class = _patched_get_cls
     factory.get_policy_class = _patched_get_cls
     if PVD_RUNTIME.enabled:
-        print(f"[PVD] installed → PVD active for policy types: "
-              f"{sorted(_PVD_CLASSES)} (other types run stock)", file=sys.stderr)
+        print(f"[PVD] installed → PVD active for policy types: {list(PVD_SUPPORTED)} "
+              f"(other types run stock)", file=sys.stderr)
 
     # ---- patch: capture the live REAL observation for q0 (reuse ghost pattern) ----
     try:

@@ -44,15 +44,20 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy  # noqa: E402
+# IMPORTANT (GPU memory): nothing heavy is imported at module load.
+#   * The base policy stack (SmolVLA / pi0.5) is imported ONLY for the type actually
+#     being run, inside make_pvd_policy_class() — so a pi0.5 run never pulls in the
+#     SmolVLA/SmolVLM backbone (and vice versa).
+#   * The scorer (pinocchio + a second processor build) is imported lazily in
+#     PVDRuntime.ensure_ready(), which runs ONLY when PVD is enabled and only at the
+#     first inference step.
+# Net: with --pvd.enabled=false this module adds no model and no extra heavy import
+# beyond the single policy the plain rollout already loads — same GPU footprint.
+SCORE = None      # -> score_trajectories, bound lazily in ensure_ready()
+PROJ = None       # -> project_trajectories, bound lazily in ensure_ready()
 
-try:  # pi0.5 is optional (heavy deps); PVD still works for smolvla if it's missing
-    from lerobot.policies.pi05.modeling_pi05 import PI05Policy  # noqa: E402
-except Exception:  # noqa: BLE001
-    PI05Policy = None
-
-import score_trajectories as SCORE      # noqa: E402  scorer core (single source of truth)
-import project_trajectories as PROJ     # noqa: E402  build_affine (norm↔rad)
+PVD_SUPPORTED = ("smolvla", "pi05")
+DEFAULT_POLICY_PATH = "qualia-robotics/smolvla-so101-candy-33c62cfe"
 
 
 class PVDRuntime:
@@ -63,8 +68,8 @@ class PVDRuntime:
         self.enabled = False
         self.num_samples = 1
         self.mode = "selection"          # selection | projection(stub)
-        self.threshold = float(SCORE.FEASIBILITY_THRESHOLD)
-        self.policy_path = SCORE.POLICY_PATH
+        self.threshold = 5.0             # scorer default; wrapper may override via --pvd.threshold
+        self.policy_path = DEFAULT_POLICY_PATH   # wrapper overrides from --policy.path
         self.log_path = None             # auto-timestamped if None
         self.kp = 300.0                  # projection tracker stiffness
         self.kd = None                   # projection tracker damping (None -> 2*sqrt(kp))
@@ -91,6 +96,10 @@ class PVDRuntime:
         with self._lock:
             if self._ready:
                 return
+            global SCORE, PROJ                      # lazily pull in pinocchio + scorer
+            if SCORE is None:
+                import score_trajectories as SCORE  # noqa: PLW0603
+                import project_trajectories as PROJ
             self.common = SCORE.load_common()
             self.model, self.data, self.q_max, _ = SCORE.load_model_and_limits()
             self.qlo = np.asarray(self.model.lowerPositionLimit, dtype=float)
@@ -248,49 +257,70 @@ class _PVDMixin:
         return out.to(candidates.device, dtype=candidates.dtype).contiguous()
 
 
-class PVDSmolVLAPolicy(_PVDMixin, SmolVLAPolicy):
-    """SmolVLA + PVD. Hook point: `_get_action_chunk` (called by select_action)."""
-
-    def _get_action_chunk(self, batch, noise=None, **kwargs):
-        rt = PVD_RUNTIME
-        if not rt.enabled:                                    # exact stock baseline
-            return super()._get_action_chunk(batch, noise=noise, **kwargs)
-        if rt.mode not in ("selection", "projection"):
-            raise ValueError(f"PVD mode must be selection|projection, got {rt.mode!r}")
-        rt.ensure_ready()
-        K = int(rt.num_samples)
-        t0 = time.perf_counter()
-        if K > 1:
-            batch_K, noise_K = self._pvd_batch(batch, K)
-            candidates = super()._get_action_chunk(batch_K, noise=noise_K, **kwargs)
-        else:
-            candidates = super()._get_action_chunk(batch, noise=noise, **kwargs)
-        return self._pvd_process(candidates, K, t0)
+def _check_mode(rt):
+    if rt.mode not in ("selection", "projection"):
+        raise ValueError(f"PVD mode must be selection|projection, got {rt.mode!r}")
 
 
-if PI05Policy is not None:
+_pvd_cls_cache: dict = {}
 
-    class PVDPi05Policy(_PVDMixin, PI05Policy):
-        """pi0.5 + PVD. Hook point: `predict_action_chunk` (called by select_action and
-        directly by the RTC engine). pi0.5 has no `_get_action_chunk`; it samples in
-        `predict_action_chunk` via `sample_actions(..., noise=)` — same as SmolVLA."""
 
-        @torch.no_grad()
-        def predict_action_chunk(self, batch, **kwargs):
+def make_pvd_policy_class(policy_type: str):
+    """Return the PVD subclass for `policy_type`, importing ONLY that policy's stack.
+
+    Called by the wrapper's patched get_policy_class, so the heavy backbone
+    (SmolVLA/SmolVLM or pi0.5/PaliGemma) is imported exactly once, only for the policy
+    the rollout is actually loading — never both. Returns None for unsupported types
+    (caller falls back to the stock class). The stock generator is called EXPLICITLY
+    (Base.<method>(self, ...)) rather than via super(), so these dynamically-built
+    subclasses don't rely on a `__class__` cell.
+    """
+    if policy_type in _pvd_cls_cache:
+        return _pvd_cls_cache[policy_type]
+
+    if policy_type == "smolvla":
+        from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy as Base
+
+        def _hook(self, batch, noise=None, **kwargs):   # overrides _get_action_chunk
             rt = PVD_RUNTIME
-            if not rt.enabled:                                # exact stock baseline
-                return super().predict_action_chunk(batch, **kwargs)
-            if rt.mode not in ("selection", "projection"):
-                raise ValueError(f"PVD mode must be selection|projection, got {rt.mode!r}")
+            if not rt.enabled:                          # exact stock baseline
+                return Base._get_action_chunk(self, batch, noise=noise, **kwargs)
+            _check_mode(rt)
             rt.ensure_ready()
             K = int(rt.num_samples)
             t0 = time.perf_counter()
             if K > 1:
                 batch_K, noise_K = self._pvd_batch(batch, K)
-                candidates = super().predict_action_chunk(batch_K, noise=noise_K, **kwargs)
+                candidates = Base._get_action_chunk(self, batch_K, noise=noise_K, **kwargs)
             else:
-                candidates = super().predict_action_chunk(batch, **kwargs)
+                candidates = Base._get_action_chunk(self, batch, noise=noise, **kwargs)
             return self._pvd_process(candidates, K, t0)
 
-else:  # pi0.5 unavailable in this install
-    PVDPi05Policy = None
+        cls = type("PVDSmolVLAPolicy", (_PVDMixin, Base), {"_get_action_chunk": _hook})
+
+    elif policy_type == "pi05":
+        from lerobot.policies.pi05.modeling_pi05 import PI05Policy as Base
+
+        @torch.no_grad()
+        def _hook(self, batch, **kwargs):               # overrides predict_action_chunk
+            rt = PVD_RUNTIME
+            if not rt.enabled:                          # exact stock baseline
+                return Base.predict_action_chunk(self, batch, **kwargs)
+            _check_mode(rt)
+            rt.ensure_ready()
+            K = int(rt.num_samples)
+            t0 = time.perf_counter()
+            if K > 1:
+                batch_K, noise_K = self._pvd_batch(batch, K)
+                candidates = Base.predict_action_chunk(self, batch_K, noise=noise_K, **kwargs)
+            else:
+                candidates = Base.predict_action_chunk(self, batch, **kwargs)
+            return self._pvd_process(candidates, K, t0)
+
+        cls = type("PVDPi05Policy", (_PVDMixin, Base), {"predict_action_chunk": _hook})
+
+    else:
+        return None
+
+    _pvd_cls_cache[policy_type] = cls
+    return cls
