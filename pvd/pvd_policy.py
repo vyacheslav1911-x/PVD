@@ -12,8 +12,12 @@ This is the "selection" operator from the proposal, wired into inference:
   candidate whose Φ exceeds `threshold`; among survivors return the one the policy
   ranked first (lowest sample index); if none pass, fall back to the least-infeasible
   and flag it. It logs every step (all K candidates' Φ + per-term breakdown) and
-  returns the chosen chunk UNMODIFIED — selection never edits a trajectory (that is
-  projection, a separate operator).
+  returns the chosen chunk. In `selection` mode the chunk is returned UNMODIFIED. In
+  `projection` mode the chosen chunk is additionally REPAIRED to feasibility by a
+  bounded-acceleration tracker (reused from project_trajectories.py) that starts at
+  the real current pose q0 and hard-clamps velocity/acceleration/joint limits — the
+  executed chunk is MODIFIED. Both modes log every candidate's Φ + per-term breakdown;
+  projection also logs the executed chunk's post-projection Φ.
 
   When PVD is disabled, `_get_action_chunk` is a pure pass-through to stock SmolVLA
   (K=1, no scoring) → byte-identical baseline.
@@ -57,6 +61,8 @@ class PVDRuntime:
         self.threshold = float(SCORE.FEASIBILITY_THRESHOLD)
         self.policy_path = SCORE.POLICY_PATH
         self.log_path = None             # auto-timestamped if None
+        self.kp = 300.0                  # projection tracker stiffness
+        self.kd = None                   # projection tracker damping (None -> 2*sqrt(kp))
 
         # --- runtime state ---
         self.last_obs = None             # latest REAL observation dict (for q0)
@@ -66,7 +72,12 @@ class PVDRuntime:
         self._log_fh = None
         # scoring resources (built once)
         self.common = self.model = self.data = self.q_max = None
+        self.qlo = self.qhi = None       # joint position limits (for projection clamp)
         self.K_aff = self.B_aff = None
+
+    @property
+    def kd_eff(self):
+        return self.kd if self.kd is not None else 2.0 * float(np.sqrt(self.kp))
 
     # -- lazy setup: Pinocchio model, limits, and the affine norm→rad map --------
     def ensure_ready(self):
@@ -77,6 +88,8 @@ class PVDRuntime:
                 return
             self.common = SCORE.load_common()
             self.model, self.data, self.q_max, _ = SCORE.load_model_and_limits()
+            self.qlo = np.asarray(self.model.lowerPositionLimit, dtype=float)
+            self.qhi = np.asarray(self.model.upperPositionLimit, dtype=float)
             post = SCORE.load_unnormalizer(self.policy_path)      # norm→deg/pct
             self.K_aff, self.B_aff = PROJ.build_affine(post, self.common)  # norm→rad
             if self.log_path is None:
@@ -97,8 +110,11 @@ class PVDRuntime:
                 "limits": {"qdot_max": float(SCORE.QDOT_MAX[0]),
                            "qddot_max": float(SCORE.QDDOT_MAX[0]),
                            "tau_max": float(SCORE.TAU_MAX[0])},
+                "projection": {"kp": self.kp, "kd": self.kd_eff} if self.mode == "projection" else None,
                 "note": "each S-term = Σ fractional-violation (dimensionless); Φ=Σ wᵢ·Sᵢ; "
-                        "limits are PLACEHOLDERS — calibrate. Selection is read-only.",
+                        "limits are PLACEHOLDERS — calibrate. selection=execute UNMODIFIED "
+                        "winner; projection=execute the winner REPAIRED by the bounded-accel "
+                        "tracker (starts at q0).",
             }}) + "\n")
             self._ready = True
 
@@ -131,10 +147,13 @@ class PVDRuntime:
             reason, fallback = "fallback_least_infeasible", True
         return chosen, results, reason, fallback, q0, q0_src
 
-    def log_step(self, chunk_shape, results, chosen, reason, fallback, q0, q0_src):
+    def log_step(self, chunk_shape, results, chosen, reason, fallback, q0, q0_src,
+                 projected=None):
         rec = {
             "step": self.step,
             "wall_time": round(time.time(), 3),
+            "mode": self.mode,
+            "executed": "projected" if projected is not None else "selected",
             "num_candidates": len(results),
             "chunk_shape": list(chunk_shape),
             "chosen_index": int(chosen),
@@ -151,6 +170,15 @@ class PVDRuntime:
                 for i, (t, p) in enumerate(results)
             ],
         }
+        if projected is not None:
+            phi_before, pterms, phi_after = projected
+            rec["phi_before"] = round(phi_before, 6)   # chosen candidate, pre-projection
+            rec["phi_after"] = round(phi_after, 6)      # executed chunk, post-projection
+            rec["projected_terms"] = {"S_pos": round(pterms["pos"], 6),
+                                      "S_vel": round(pterms["vel"], 6),
+                                      "S_acc": round(pterms["acc"], 6),
+                                      "S_torque": round(pterms["torque"], 6),
+                                      "S_cont": round(pterms["cont"], 6)}
         self._log_fh.write(json.dumps(rec) + "\n")
 
 
@@ -167,15 +195,12 @@ class PVDSmolVLAPolicy(SmolVLAPolicy):
         if not rt.enabled:
             return super()._get_action_chunk(batch, noise=noise, **kwargs)
 
-        # ---- projection is a distinct operator, not implemented here ----
-        if rt.mode == "projection":
-            raise NotImplementedError(
-                "PVD projection operator is not implemented in the policy yet. "
-                "Use --pvd.mode=selection. Projection (trajectory MODIFICATION) is a "
-                "separate operator — see project_trajectories.py.")
+        if rt.mode not in ("selection", "projection"):
+            raise ValueError(f"PVD mode must be selection|projection, got {rt.mode!r}")
 
         rt.ensure_ready()
         K = int(rt.num_samples)
+        t0 = time.perf_counter()
 
         # ---- sample K candidates from ONE observation, in a single batched pass ----
         if K > 1:
@@ -195,8 +220,31 @@ class PVDSmolVLAPolicy(SmolVLAPolicy):
         # ---- score on CPU (Pinocchio is CPU-only) and select ----
         cand_np = candidates.detach().to("cpu", dtype=torch.float32).numpy()  # [K,H,6] norm
         chosen, results, reason, fallback, q0, q0_src = rt.select(cand_np)
-        rt.log_step(candidates.shape, results, chosen, reason, fallback, q0, q0_src)
-        rt.step += 1
 
-        # ---- return the chosen candidate UNMODIFIED ([1,H,6]) ----
-        return candidates[chosen:chosen + 1].contiguous()
+        # ---- SELECTION: execute the chosen candidate UNMODIFIED ----
+        if rt.mode == "selection":
+            rt.log_step(candidates.shape, results, chosen, reason, fallback, q0, q0_src)
+            print(f"[PVD] step {rt.step}: selection K={K} in "
+                  f"{(time.perf_counter() - t0) * 1e3:.0f}ms → cand {chosen} "
+                  f"({reason}, Φ={results[chosen][1]:.2f})", file=sys.stderr)
+            rt.step += 1
+            return candidates[chosen:chosen + 1].contiguous()
+
+        # ---- PROJECTION: repair the chosen candidate to feasibility, execute it ----
+        # Project in radian space (the limits are physical), starting at the real q0,
+        # then invert the affine so the downstream postprocessor still recovers correct
+        # robot units. This MODIFIES the chunk (distinct from selection).
+        chosen_rad = cand_np[chosen] * rt.K_aff + rt.B_aff                      # [H,6] rad
+        proj_rad = PROJ.track(chosen_rad, q0, SCORE.QDOT_MAX, SCORE.QDDOT_MAX,
+                              SCORE.DT, rt.kp, rt.kd_eff, rt.qlo, rt.qhi)        # feasible by constr.
+        proj_norm = (proj_rad - rt.B_aff) / rt.K_aff                            # [H,6] norm
+        pterms = SCORE.score_candidate(proj_rad, q0, rt.model, rt.data, rt.q_max)
+        phi_after = float(SCORE.phi(pterms))
+        rt.log_step(candidates.shape, results, chosen, reason, fallback, q0, q0_src,
+                    projected=(results[chosen][1], pterms, phi_after))
+        print(f"[PVD] step {rt.step}: projection K={K} in "
+              f"{(time.perf_counter() - t0) * 1e3:.0f}ms → cand {chosen} "
+              f"Φ {results[chosen][1]:.1f} → repaired Φ {phi_after:.2f}", file=sys.stderr)
+        rt.step += 1
+        out = torch.from_numpy(proj_norm.astype(np.float32)).unsqueeze(0)
+        return out.to(candidates.device, dtype=candidates.dtype).contiguous()

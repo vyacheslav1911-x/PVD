@@ -16,7 +16,9 @@ without editing any lerobot code, by:
 CLI (added on top of your normal lerobot-rollout flags):
     --pvd.enabled=true|false     (default false → identical to stock)
     --pvd.num_samples=K          (default 1)
-    --pvd.mode=selection|projection   (projection is a stub → clear error)
+    --pvd.mode=selection|projection   (selection=execute winner UNMODIFIED;
+                                       projection=execute winner REPAIRED to feasibility)
+    --pvd.kp=300  --pvd.kd=<2√kp>     (projection tracker gains)
     --pvd.threshold=T            (feasibility hard-reject on Φ)
     --pvd.log_path=/path.jsonl   (default auto-timestamped under <repo>/pvd_logs/)
 """
@@ -74,6 +76,10 @@ def main():
         PVD_RUNTIME.threshold = float(pvd["threshold"])
     if "log_path" in pvd:
         PVD_RUNTIME.log_path = os.path.expanduser(pvd["log_path"])
+    if "kp" in pvd:
+        PVD_RUNTIME.kp = float(pvd["kp"])
+    if "kd" in pvd:
+        PVD_RUNTIME.kd = float(pvd["kd"])
 
     # policy path is needed to build the (un)normalizer for scoring
     pp = _find_value(rest, "--policy.path")
@@ -84,15 +90,18 @@ def main():
     if PVD_RUNTIME.enabled:
         if PVD_RUNTIME.mode not in ("selection", "projection"):
             sys.exit(f"[PVD] --pvd.mode must be selection|projection (got {PVD_RUNTIME.mode!r})")
-        if PVD_RUNTIME.mode == "projection":
-            sys.exit("[PVD] --pvd.mode=projection is a STUB (not implemented). "
-                     "Selection only for now; projection is a separate operator that "
-                     "MODIFIES trajectories — see project_trajectories.py.")
         if PVD_RUNTIME.num_samples < 1:
             sys.exit(f"[PVD] --pvd.num_samples must be ≥ 1 (got {PVD_RUNTIME.num_samples})")
 
     # ---- patch: make the rollout build PVDSmolVLAPolicy ----
+    # CRITICAL: the rollout's context.py did `from lerobot.policies import
+    # get_policy_class`, so it holds its OWN reference to the function. Patching only
+    # `factory.get_policy_class` is a NO-OP for the rollout (that was the bug where PVD
+    # silently ran stock SmolVLA). Patch the binding context.py actually calls, plus the
+    # re-export and factory for good measure.
     import lerobot.policies.factory as factory
+    import lerobot.policies as policies_pkg
+    import lerobot.rollout.context as rollout_context
     _orig_get_cls = factory.get_policy_class
 
     def _patched_get_cls(name):
@@ -100,7 +109,12 @@ def main():
             return PVDSmolVLAPolicy
         return _orig_get_cls(name)
 
+    rollout_context.get_policy_class = _patched_get_cls   # the one that matters
+    policies_pkg.get_policy_class = _patched_get_cls
     factory.get_policy_class = _patched_get_cls
+    if PVD_RUNTIME.enabled:
+        resolved = rollout_context.get_policy_class("smolvla").__name__
+        print(f"[PVD] installed → rollout will build {resolved} for 'smolvla'", file=sys.stderr)
 
     # ---- patch: capture the live REAL observation for q0 (reuse ghost pattern) ----
     try:

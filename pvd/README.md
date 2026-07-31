@@ -83,9 +83,29 @@ cd ~/Desktop/PVD/pvd
 |---|---|---|
 | `--pvd.enabled` | `false` | PVD on/off. `false` ⇒ identical to stock SmolVLA. |
 | `--pvd.num_samples` | `1` | K candidate chunks per inference (batched into one forward pass). |
-| `--pvd.mode` | `selection` | `selection` (implemented) or `projection` (stub → clear error). |
+| `--pvd.mode` | `selection` | `selection` = execute the winner UNMODIFIED; `projection` = execute the winner REPAIRED to feasibility. |
 | `--pvd.threshold` | `5.0` | feasibility hard-reject on Φ. |
+| `--pvd.kp` | `300` | projection tracker stiffness (higher = tighter tracking of the policy chunk). |
+| `--pvd.kd` | `2√kp` | projection tracker damping (default = critical). |
 | `--pvd.log_path` | auto | JSONL log; default `~/Desktop/PVD/pvd_logs/pvd_run_<timestamp>.jsonl`. |
+
+### selection vs projection
+
+- **selection** samples K, picks by filter-then-prefer (Φ ≤ threshold → policy-preferred;
+  else least-infeasible), and executes that candidate **unmodified**.
+- **projection** does the same pick, then **repairs** the chosen chunk with the
+  bounded-acceleration tracker (reused from `project_trajectories.py`) — starting at the
+  real current pose `q0` and hard-clamping velocity/acceleration/joint limits — and
+  executes the **modified**, feasible chunk. At `--pvd.num_samples=1` this is pure
+  projection of the policy's own chunk. The log adds `phi_before`/`phi_after` and
+  `projected_terms` so you can see the repair.
+
+Run projection (K=1 is fine and cheapest):
+
+```bash
+./run_pvd_rollout.sh <your usual robot/policy/cameras/task flags> \
+  --pvd.enabled=true --pvd.mode=projection --pvd.num_samples=1 --pvd.kp=300
+```
 
 `--robot.max_relative_target` still applies underneath PVD as the last-resort cap.
 
