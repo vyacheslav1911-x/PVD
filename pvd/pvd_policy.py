@@ -46,6 +46,11 @@ if _REPO not in sys.path:
 
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy  # noqa: E402
 
+try:  # pi0.5 is optional (heavy deps); PVD still works for smolvla if it's missing
+    from lerobot.policies.pi05.modeling_pi05 import PI05Policy  # noqa: E402
+except Exception:  # noqa: BLE001
+    PI05Policy = None
+
 import score_trajectories as SCORE      # noqa: E402  scorer core (single source of truth)
 import project_trajectories as PROJ     # noqa: E402  build_affine (norm↔rad)
 
@@ -185,39 +190,33 @@ class PVDRuntime:
 PVD_RUNTIME = PVDRuntime()
 
 
-class PVDSmolVLAPolicy(SmolVLAPolicy):
-    """SmolVLA whose chunk generation optionally runs PVD selection over K samples."""
+class _PVDMixin:
+    """Policy-agnostic PVD: batch K samples, score, select/project, log.
 
-    def _get_action_chunk(self, batch, noise=None, **kwargs):
+    A concrete policy subclass overrides its own chunk-generation method, samples the
+    K candidates by calling the stock generator with a batched noise, and hands the
+    [K, H, A] tensor of NORMALIZED candidate chunks to `_pvd_process`. Everything after
+    sampling (scoring, filter-then-prefer, projection, logging) is identical across
+    policies — only the sampling hook differs (SmolVLA: `_get_action_chunk`;
+    pi0.5: `predict_action_chunk`).
+    """
+
+    def _pvd_batch(self, batch, K):
+        """Repeat a B=1 observation batch to K and draw K independent noises."""
+        device = next(self.parameters()).device
+        batch_K = {}
+        for k, v in batch.items():
+            if torch.is_tensor(v) and v.ndim >= 1 and v.shape[0] == 1:
+                batch_K[k] = v.repeat(*([K] + [1] * (v.ndim - 1)))
+            else:
+                batch_K[k] = v
+        noise_K = self.model.sample_noise(
+            (K, self.config.chunk_size, self.config.max_action_dim), device)
+        return batch_K, noise_K
+
+    def _pvd_process(self, candidates, K, t0):
+        """candidates: [K,H,A] normalized. Returns the [1,H,A] chunk to execute."""
         rt = PVD_RUNTIME
-
-        # ---- disabled → exact stock behaviour (clean baseline) ----
-        if not rt.enabled:
-            return super()._get_action_chunk(batch, noise=noise, **kwargs)
-
-        if rt.mode not in ("selection", "projection"):
-            raise ValueError(f"PVD mode must be selection|projection, got {rt.mode!r}")
-
-        rt.ensure_ready()
-        K = int(rt.num_samples)
-        t0 = time.perf_counter()
-
-        # ---- sample K candidates from ONE observation, in a single batched pass ----
-        if K > 1:
-            device = next(self.parameters()).device
-            batch_K = {}
-            for k, v in batch.items():
-                if torch.is_tensor(v) and v.ndim >= 1 and v.shape[0] == 1:
-                    batch_K[k] = v.repeat(*([K] + [1] * (v.ndim - 1)))
-                else:
-                    batch_K[k] = v
-            noise_K = self.model.sample_noise(
-                (K, self.config.chunk_size, self.config.max_action_dim), device)
-            candidates = super()._get_action_chunk(batch_K, noise=noise_K, **kwargs)
-        else:
-            candidates = super()._get_action_chunk(batch, noise=noise, **kwargs)
-
-        # ---- score on CPU (Pinocchio is CPU-only) and select ----
         cand_np = candidates.detach().to("cpu", dtype=torch.float32).numpy()  # [K,H,6] norm
         chosen, results, reason, fallback, q0, q0_src = rt.select(cand_np)
 
@@ -231,9 +230,8 @@ class PVDSmolVLAPolicy(SmolVLAPolicy):
             return candidates[chosen:chosen + 1].contiguous()
 
         # ---- PROJECTION: repair the chosen candidate to feasibility, execute it ----
-        # Project in radian space (the limits are physical), starting at the real q0,
-        # then invert the affine so the downstream postprocessor still recovers correct
-        # robot units. This MODIFIES the chunk (distinct from selection).
+        # Project in radian space (limits are physical), starting at the real q0, then
+        # invert the affine so the downstream postprocessor still recovers robot units.
         chosen_rad = cand_np[chosen] * rt.K_aff + rt.B_aff                      # [H,6] rad
         proj_rad = PROJ.track(chosen_rad, q0, SCORE.QDOT_MAX, SCORE.QDDOT_MAX,
                               SCORE.DT, rt.kp, rt.kd_eff, rt.qlo, rt.qhi)        # feasible by constr.
@@ -248,3 +246,51 @@ class PVDSmolVLAPolicy(SmolVLAPolicy):
         rt.step += 1
         out = torch.from_numpy(proj_norm.astype(np.float32)).unsqueeze(0)
         return out.to(candidates.device, dtype=candidates.dtype).contiguous()
+
+
+class PVDSmolVLAPolicy(_PVDMixin, SmolVLAPolicy):
+    """SmolVLA + PVD. Hook point: `_get_action_chunk` (called by select_action)."""
+
+    def _get_action_chunk(self, batch, noise=None, **kwargs):
+        rt = PVD_RUNTIME
+        if not rt.enabled:                                    # exact stock baseline
+            return super()._get_action_chunk(batch, noise=noise, **kwargs)
+        if rt.mode not in ("selection", "projection"):
+            raise ValueError(f"PVD mode must be selection|projection, got {rt.mode!r}")
+        rt.ensure_ready()
+        K = int(rt.num_samples)
+        t0 = time.perf_counter()
+        if K > 1:
+            batch_K, noise_K = self._pvd_batch(batch, K)
+            candidates = super()._get_action_chunk(batch_K, noise=noise_K, **kwargs)
+        else:
+            candidates = super()._get_action_chunk(batch, noise=noise, **kwargs)
+        return self._pvd_process(candidates, K, t0)
+
+
+if PI05Policy is not None:
+
+    class PVDPi05Policy(_PVDMixin, PI05Policy):
+        """pi0.5 + PVD. Hook point: `predict_action_chunk` (called by select_action and
+        directly by the RTC engine). pi0.5 has no `_get_action_chunk`; it samples in
+        `predict_action_chunk` via `sample_actions(..., noise=)` — same as SmolVLA."""
+
+        @torch.no_grad()
+        def predict_action_chunk(self, batch, **kwargs):
+            rt = PVD_RUNTIME
+            if not rt.enabled:                                # exact stock baseline
+                return super().predict_action_chunk(batch, **kwargs)
+            if rt.mode not in ("selection", "projection"):
+                raise ValueError(f"PVD mode must be selection|projection, got {rt.mode!r}")
+            rt.ensure_ready()
+            K = int(rt.num_samples)
+            t0 = time.perf_counter()
+            if K > 1:
+                batch_K, noise_K = self._pvd_batch(batch, K)
+                candidates = super().predict_action_chunk(batch_K, noise=noise_K, **kwargs)
+            else:
+                candidates = super().predict_action_chunk(batch, **kwargs)
+            return self._pvd_process(candidates, K, t0)
+
+else:  # pi0.5 unavailable in this install
+    PVDPi05Policy = None

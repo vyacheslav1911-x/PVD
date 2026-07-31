@@ -64,7 +64,7 @@ def main():
 
     pvd, rest = _extract_pvd_args(sys.argv[1:])
 
-    from pvd.pvd_policy import PVD_RUNTIME, PVDSmolVLAPolicy
+    from pvd.pvd_policy import PVD_RUNTIME, PVDSmolVLAPolicy, PVDPi05Policy
 
     if "enabled" in pvd:
         PVD_RUNTIME.enabled = _as_bool(pvd["enabled"])
@@ -104,17 +104,22 @@ def main():
     import lerobot.rollout.context as rollout_context
     _orig_get_cls = factory.get_policy_class
 
+    # dispatch by policy type; each maps to its PVD subclass
+    _PVD_CLASSES = {"smolvla": PVDSmolVLAPolicy}
+    if PVDPi05Policy is not None:
+        _PVD_CLASSES["pi05"] = PVDPi05Policy
+
     def _patched_get_cls(name):
-        if name == "smolvla":
-            return PVDSmolVLAPolicy
+        if name in _PVD_CLASSES:
+            return _PVD_CLASSES[name]
         return _orig_get_cls(name)
 
     rollout_context.get_policy_class = _patched_get_cls   # the one that matters
     policies_pkg.get_policy_class = _patched_get_cls
     factory.get_policy_class = _patched_get_cls
     if PVD_RUNTIME.enabled:
-        resolved = rollout_context.get_policy_class("smolvla").__name__
-        print(f"[PVD] installed → rollout will build {resolved} for 'smolvla'", file=sys.stderr)
+        print(f"[PVD] installed → PVD active for policy types: "
+              f"{sorted(_PVD_CLASSES)} (other types run stock)", file=sys.stderr)
 
     # ---- patch: capture the live REAL observation for q0 (reuse ghost pattern) ----
     try:
