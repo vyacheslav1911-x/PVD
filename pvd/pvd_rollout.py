@@ -81,10 +81,17 @@ def main():
     if "kd" in pvd:
         PVD_RUNTIME.kd = float(pvd["kd"])
 
-    # policy path is needed to build the (un)normalizer for scoring
-    pp = _find_value(rest, "--policy.path")
+    # policy path is needed to build the (un)normalizer for scoring. Accept both the
+    # parser's special `--policy.path` and draccus's `--policy.pretrained_path`.
+    pp = _find_value(rest, "--policy.path") or _find_value(rest, "--policy.pretrained_path")
     if pp:
         PVD_RUNTIME.policy_path = pp
+
+    # If the user pinned a dtype explicitly, respect it; otherwise the PVD policy loader
+    # aligns pi0/pi05's fp32-default dtype to the checkpoint (bf16) to avoid a load-time OOM.
+    PVD_RUNTIME.explicit_dtype = any(
+        a == "--policy.dtype" or a.startswith("--policy.dtype=") for a in rest
+    )
 
     # ---- validation / friendly early guards (before touching hardware) ----
     if PVD_RUNTIME.enabled:

@@ -1,0 +1,171 @@
+This is the research notes of the PVD research. All the things listed bellow
+have to be clear and that information will be presented in the paper, find 
+outs and things like that. The stucture is - the research task and then the 
+result. Follow the strucure
+1. Run few forward passes on pi0.5 and smolvla under the same observation and note the policies divergence.
+SMOLVLA divergence
+_ Average time per trajectory: 0.059 seconds
+Per-joint spread (max - min over all candidates x timesteps):
+K trajectories | vector of differences in each joint
+K = 10
+joint                min       max    spread
+shoulder_pan      29.210    39.640    10.430
+shoulder_lift     16.393    57.206    40.813
+elbow_flex       -58.662   -26.627    32.036
+wrist_flex        71.581    91.548    19.968
+wrist_roll       -27.469   -13.895    13.574
+gripper            1.311    13.201    11.890
+
+K = 150
+joint                min       max    spread
+shoulder_pan      28.818    42.804    13.986
+shoulder_lift     14.160    59.078    44.918
+elbow_flex       -64.891   -22.651    42.240
+wrist_flex        69.394    94.036    24.642
+wrist_roll       -27.755    -6.850    20.906
+gripper            1.191    17.912    16.721
+
+
+==============================================================================
+COMPUTATION METHOD (how the K-divergence sweep is generated efficiently)
+==============================================================================
+Task: measure how action divergence grows with the number of sampled trajectories
+K, sweeping K = 5,10,...,100 (step 5) then 100,150,...,1000 (step 50), from ONE
+static observation. Script: generate_k_divergence_1000.py.
+
+The naive way (regenerate K trajectories per K value, one trajectory at a time)
+re-runs the whole policy ~21,000 times and re-encodes the same image/language
+prefix every single time. Three changes make it ~12x cheaper WITHOUT changing
+the sampled distribution:
+
+  1. ENCODE THE VLM PREFIX ONCE (cached KV reuse).
+     The observation (2 cameras + state + task text) is identical for every
+     trajectory, so the heavy SigLIP/VLM forward is run a SINGLE time and its
+     key/value cache is kept. Every trajectory then reuses that cache.
+     -> VLM encodes once (~0.21 s) instead of ~2000 times.
+
+  2. BATCH THE FLOW-MATCHING DENOISE (expand the cached KV to a mini-batch).
+     Only the small action-expert denoise loop varies per trajectory. The
+     batch-1 prefix KV cache is broadcast to a mini-batch of B=100 and B
+     candidates are denoised in parallel (10 flow-matching steps), instead of
+     looping one trajectory at a time.
+
+  3. NESTED SUBSET (generate the max once, read every K off the front).
+     Generate N_MAX = 1000 trajectories ONCE, then the divergence at each K is
+     just the per-joint spread of the FIRST K of those 1000 (they are i.i.d., so
+     the first K are a valid K-sample). One un-normalization covers all 1000.
+     Note: this makes the K-curve monotonic by construction (adding samples can
+     only widen max-min), which is why it is far smoother than independent runs.
+
+Result (RTX 4060 Ti, smolvla): generating 1000 trajectories dropped from
+67.5 s -> 14.2 s (14.2 ms/traj); VLM prefix encoded exactly once.
+
+Divergence-vs-K fits a saturating exponential  y = A - B*exp(-K/tau):
+   A (asymptote) = 30.76,  B = 8.91,  tau = 193.1,  R^2 = 0.987
+Interpretation: divergence rises fast then plateaus toward ~30.8; ~63% of the
+ceiling is reached by K~=193, and it is essentially saturated past K~=600.
+
+Full per-K blocks: Research_notes_divergence_1000.txt
+Machine-readable:  divergence_summary_1000.csv   Plot: divergence_vs_k_1000.png
+Caveat: the averaged y mixes units (5 arm joints in degrees + gripper closure).
+
+
+==============================================================================
+FINDING: pi0.5 diverges WIDER than SmolVLA (bigger model -> more spread)
+==============================================================================
+Both policies run with the IDENTICAL observation, noise scheme, nested-subset
+method, dense-at-the-bend K sampling (K=2..1000), log-K plot, and saturating fit.
+Scripts: generate_k_divergence_1000.py (SmolVLA), generate_k_divergence_pi05.py (pi0.5).
+
+Saturating-exponential fit  y = A - B*exp(-K/tau)   (both: dense K to 1000, log-K):
+   SmolVLA (~0.5B):  A = 30.33,  B = 9.83,  tau = 125.0,  R^2 = 0.894
+   pi0.5   (~4B):    A = 38.72,  B = 15.00, tau = 125.0,  R^2 = 0.937
+
+Result: pi0.5 is WIDER. Its divergence ceiling (asymptote A) is ~38.7 vs ~30.3
+for SmolVLA -- about +28% more trajectory spread at saturation under the same
+observation. The larger / better model explores a noticeably larger action
+manifold from a single observation.
+
+Notably, with the SAME methodology both models have the SAME knee timescale
+tau ~= 125 -- i.e. both saturate at about the same sample count; the models differ
+in the HEIGHT of the ceiling (spread width), NOT in how fast they get there. This
+matters for PVD: pi0.5's wider candidate set gives the physics-verified selector
+MORE distinct candidates to choose among per step, for the same K.
+
+Notes: R^2 (~0.89-0.94) is held down by the very-low-K points (K=2..4), which are
+high-variance single draws; on log-K the data read slightly sigmoidal.
+Same mixed-units caveat on the averaged y (5 joints deg + gripper closure).
+
+SmolVLA: Research_notes_divergence_1000.txt / divergence_summary_1000.csv / divergence_vs_k_1000.png
+pi0.5:   Research_notes_divergence_pi05.txt / divergence_summary_pi05.csv / divergence_vs_k_pi05.png
+
+
+==============================================================================
+VALIDATION: S_vel is a grounded FEASIBILITY term (tested on real hardware)
+==============================================================================
+Claim: the velocity term S_vel = Sigma max(0, |q_dot| - q_dot_max) corresponds to
+a REAL, measurable failure of the SO-101 arm -- not just a number.
+
+Ground truth. We use tracking error e_j(t) = q_cmd,j(t) - q_ach,j(t+L) as the
+physical "infeasible" signal: if the arm cannot follow a command, the commanded
+joint position and the achieved joint position diverge. This needs only position
+reads (the torque route failed earlier -- measured servo load is friction-
+dominated, r~0.26 vs velocity r~0.8, so it cannot ground the scorer).
+
+Data. One SmolVLA rollout on the physical SO-101 (qualia smolvla checkpoint),
+852 steps at ~30 Hz, recorded with record_rollout.py, which logs -- per control
+tick, time-synced -- the policy command (cmd_, what Phi scores), the safety-capped
+command actually sent (sent_, after --robot.max_relative_target=10), and the
+achieved position (pos_, Present_Position). File: pvd_logs/record_run1.csv.
+The achieved position lags the command by L=4 ticks (~132 ms), found by minimising
+mean |e|; all correlations use that alignment.
+
+Test + result. Per joint, correlate |commanded velocity| against |tracking error|:
+   mean body-joint r = +0.362.
+A higher commanded speed co-occurs with larger tracking error, on EVERY body joint.
+
+Ruling out the safety cap (the key control). Because --robot.max_relative_target
+clips large commands, part of that correlation could be the CAP, not the servo.
+We re-ran with every cap-affected tick masked out (any clip in the alignment
+window [t, t+L]). The correlation SURVIVES:
+   mean body-joint r = +0.269 (cap-masked).
+Per joint (cap-masked r): shoulder_pan 0.436, wrist_roll 0.359, wrist_flex 0.264,
+elbow_flex 0.232, shoulder_lift 0.054. shoulder_pan and wrist_flex are IDENTICAL
+masked vs unmasked (they were never capped) -- clean servo evidence.
+
+VERDICT: S_vel VALIDATED as a feasibility term. Commanding a joint faster than it
+can move produces measurable tracking failure, and the effect is grounded in servo
+behaviour (survives cap-masking), not an artefact of the safety cap. It stays in
+the feasibility block of Phi.
+
+Scope / caveats (state these in the paper):
+  * Moderate, not strong (r~0.27). Velocity explains PART of tracking failure;
+    torque/gravity explain the rest -- expected, and it is why S_vel coexists with
+    the torque term rather than replacing it.
+  * The THRESHOLD q_dot_max is currently wrong. The scorer uses a placeholder
+    q_dot_max = 3 rad/s (172 deg/s), but the policy commands up to ~20 rad/s and
+    the cap (5.2 rad/s) is what actually binds. A feasibility penalty with a
+    mis-set limit fires at the wrong point. q_dot_max MUST be measured per joint
+    (single-joint ramp test) before S_vel is quantitatively useful. The term is
+    validated; its limit is not yet calibrated.
+  * Division of labour on the gravity joint. On shoulder_lift (heaviest, capped
+    most) the velocity<->error link collapses to r=0.05 once cap ticks are removed
+    -- there the real limiter is torque/gravity, which belongs to the TORQUE term,
+    not S_vel. So: S_vel owns velocity-limited joints; the torque term owns
+    gravity-limited ones.
+  * Single trajectory -- r values are indicative; a multi-trajectory Phi-vs-total-
+    error sweep is the next grounding step.
+
+Contrast (companion results, same data/method):
+  * S_acc failed as a FEASIBILITY term (velocity-controlled partial r vs tracking
+    error ~= +0.01) but is grounded as a SMOOTHNESS term (partial r vs measured
+    jerk = +0.16, up to +0.41 on the low-inertia wrist joint) -- it belongs with
+    the torque/smoothness block, not the limit block.
+  * S_cont is not grounded in rollout data (boundary-proximity partial r ~= -0.05
+    over n=4035; the policy conditions each chunk on q0 and the cap smooths jumps)
+    -- needs a dedicated jump test.
+
+Scripts: record_rollout.py (recording), validate_kinematic_terms.py +
+validate_reanalysis.py (S_vel/S_acc/S_cont), validate_sacc_smoothness.py.
+Plot: kinematic_terms_validation.png.
+

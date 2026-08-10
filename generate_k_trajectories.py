@@ -16,6 +16,8 @@ WHY K TRAJECTORIES?
 OUTPUT: tensor [K, chunk_size, 6], still in NORMALIZED action space.
 """
 
+import time
+from lerobot.policies.smolvla.modeling_smolvla import make_att_2d_masks, OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK
 import torch
 import numpy as np
 from PIL import Image
@@ -27,7 +29,7 @@ from lerobot.policies.factory import make_pre_post_processors
 # CONFIG
 # ----------------------------------------------------------------------------
 POLICY_PATH = "qualia-robotics/smolvla-so101-candy-33c62cfe"
-DEVICE      = "cpu"          # "cuda" on the RTX box; "cpu" on the MX110 laptop
+DEVICE      = "cuda"          # "cuda" on the RTX box; "cpu" on the MX110 laptop
 K           = 15
 
 TOP_IMG   = "observation/top.png"
@@ -53,11 +55,7 @@ policy.eval().to(DEVICE)
 # The preprocessor turns a raw obs dict into the fully-tokenized batch the model
 # consumes — crucially it creates observation.language.tokens from the task
 # string. Without it, _get_action_chunk KeyErrors on missing tokens.
-preprocessor, _ = make_pre_post_processors(
-    policy.config,
-    pretrained_path=POLICY_PATH,
-    preprocessor_overrides={"device_processor": {"device": "cpu"}},
-)
+preprocessor, _ = make_pre_post_processors(policy.config, pretrained_path=POLICY_PATH)
 
 CHUNK = policy.config.chunk_size       # 50 timesteps
 ADIM  = policy.config.max_action_dim   # 32 padded width (draw noise at 32)
@@ -91,15 +89,79 @@ batch = preprocessor(obs)
 # 4. Generate K trajectories
 # ----------------------------------------------------------------------------
 trajectories = []
-print("Calculating trajectories...")
+# ----------------------------------------------------------------------------
+# 4. Generate K trajectories (EFFICIENT CACHING)
+# ----------------------------------------------------------------------------
+print("Extracting static VLM embeddings...")
 with torch.no_grad():
+    # --- START VLM TIMER ---
+    vlm_start = time.perf_counter()
+
+    # --- A. PREPARE INPUTS ---
+    images, img_masks = policy.prepare_images(batch)
+    state = policy.prepare_state(batch)
+    lang_tokens = batch[OBS_LANGUAGE_TOKENS]
+    lang_masks = batch[OBS_LANGUAGE_ATTENTION_MASK]
+
+    # --- B. RUN VLM ONCE TO GET KV CACHE ---
+    prefix_embs, prefix_pad_masks, prefix_att_masks = policy.model.embed_prefix(
+        images, img_masks, lang_tokens, lang_masks, state=state
+    )
+    prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+    prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+
+    _, past_key_values = policy.model.vlm_with_expert.forward(
+        attention_mask=prefix_att_2d_masks,
+        position_ids=prefix_position_ids,
+        past_key_values=None,
+        inputs_embeds=[prefix_embs, None],
+        use_cache=policy.config.use_cache,
+        fill_kv_cache=True,
+    )
+    
+    # --- END VLM TIMER ---
+    vlm_end = time.perf_counter()
+    print(f"-> VLM extraction took: {vlm_end - vlm_start:.3f} seconds")
+
+    # --- C. GENERATE K TRAJECTORIES ---
+    trajectories = []
+    num_steps = policy.config.num_steps
+    dt = -1.0 / num_steps
+    
+    print(f"\nCalculating {K} trajectories...")
+    # --- START GENERATION TIMER ---
+    gen_start = time.perf_counter()
+
     for k in range(K):
-        noise = torch.randn(1, CHUNK, ADIM, device=DEVICE)      # [1,50,32] independent
-        chunk = policy._get_action_chunk(batch, noise=noise)    # [1,50,6] unpadded
-        trajectories.append(chunk.squeeze(0).cpu())             # [50,6]
+        x_t = torch.randn(1, CHUNK, ADIM, device=DEVICE)
 
-trajectories = torch.stack(trajectories)   # [K,50,6]
+        for step in range(num_steps):
+            time_val = 1.0 + step * dt
+            time_tensor = torch.tensor(time_val, dtype=torch.float32, device=DEVICE).expand(1)
 
+            v_t = policy.model.denoise_step(
+                x_t=x_t,
+                prefix_pad_masks=prefix_pad_masks,
+                past_key_values=past_key_values,
+                timestep=time_tensor,
+            )
+            
+            x_t = x_t + dt * v_t
+
+        original_action_dim = policy.config.action_feature.shape[0]
+        chunk = x_t[:, :, :original_action_dim]
+        
+        if policy.config.adapt_to_pi_aloha:
+            chunk = policy._pi_aloha_encode_actions(chunk)
+
+        trajectories.append(chunk.squeeze(0).cpu())
+
+trajectories = torch.stack(trajectories)
+
+# --- END GENERATION TIMER ---
+gen_end = time.perf_counter()
+print(f"-> Generation of {K} actions took: {gen_end - gen_start:.3f} seconds")
+print(f"-> Average time per trajectory: {(gen_end - gen_start) / K:.3f} seconds\n")
 # ----------------------------------------------------------------------------
 # 5. Report + save
 # ----------------------------------------------------------------------------

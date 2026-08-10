@@ -1,0 +1,482 @@
+SMOLVLA divergence — K sweep (nested subset of 1000)
+Per-joint spread (max - min over first-K candidates x timesteps):
+K trajectories | vector of differences in each joint
+(5 arm joints in degrees; gripper in its own closure unit)
+
+K = 2
+joint                min       max    spread
+shoulder_pan      30.809    38.556     7.747
+shoulder_lift     21.308    52.522    31.215
+elbow_flex       -52.761   -32.197    20.564
+wrist_flex        74.286    90.119    15.833
+wrist_roll       -23.126   -17.028     6.098
+gripper            1.725     9.291     7.566
+
+K = 3
+joint                min       max    spread
+shoulder_pan      30.776    38.819     8.042
+shoulder_lift     21.308    54.831    33.523
+elbow_flex       -52.761   -32.197    20.564
+wrist_flex        69.968    90.119    20.151
+wrist_roll       -24.459   -17.028     7.432
+gripper            1.388     9.291     7.903
+
+K = 4
+joint                min       max    spread
+shoulder_pan      30.776    38.819     8.042
+shoulder_lift     20.811    54.831    34.020
+elbow_flex       -52.761   -30.203    22.558
+wrist_flex        69.968    90.119    20.151
+wrist_roll       -24.459   -13.716    10.744
+gripper            1.388    18.366    16.977
+
+K = 5
+joint                min       max    spread
+shoulder_pan      30.776    38.819     8.042
+shoulder_lift     19.792    54.831    35.038
+elbow_flex       -59.715   -30.203    29.511
+wrist_flex        69.968    92.635    22.667
+wrist_roll       -24.459   -13.421    11.039
+gripper            1.388    18.366    16.977
+
+K = 6
+joint                min       max    spread
+shoulder_pan      30.300    38.819     8.519
+shoulder_lift     19.792    54.831    35.038
+elbow_flex       -59.715   -30.203    29.511
+wrist_flex        69.968    92.635    22.667
+wrist_roll       -24.459   -13.421    11.039
+gripper            1.388    18.366    16.977
+
+K = 7
+joint                min       max    spread
+shoulder_pan      30.300    39.051     8.752
+shoulder_lift     19.792    54.831    35.038
+elbow_flex       -59.715   -30.203    29.511
+wrist_flex        69.968    93.165    23.196
+wrist_roll       -24.553   -13.421    11.132
+gripper            1.388    18.366    16.977
+
+K = 8
+joint                min       max    spread
+shoulder_pan      29.779    39.051     9.272
+shoulder_lift     19.792    54.831    35.038
+elbow_flex       -59.715   -30.203    29.511
+wrist_flex        69.968    93.165    23.196
+wrist_roll       -24.553   -13.421    11.132
+gripper            1.388    18.366    16.977
+
+K = 9
+joint                min       max    spread
+shoulder_pan      29.779    39.786    10.007
+shoulder_lift     19.792    54.831    35.038
+elbow_flex       -59.715   -30.203    29.511
+wrist_flex        69.968    93.165    23.196
+wrist_roll       -24.553   -10.889    13.664
+gripper            1.388    18.366    16.977
+
+K = 10
+joint                min       max    spread
+shoulder_pan      29.390    39.786    10.396
+shoulder_lift     17.842    54.831    36.989
+elbow_flex       -59.715   -30.203    29.511
+wrist_flex        69.968    93.165    23.196
+wrist_roll       -24.553   -10.889    13.664
+gripper            1.388    18.366    16.977
+
+K = 11
+joint                min       max    spread
+shoulder_pan      29.390    39.786    10.396
+shoulder_lift     17.842    54.831    36.989
+elbow_flex       -59.715   -26.759    32.956
+wrist_flex        69.968    93.165    23.196
+wrist_roll       -24.553   -10.889    13.664
+gripper            1.388    18.366    16.977
+
+K = 12
+joint                min       max    spread
+shoulder_pan      29.390    39.786    10.396
+shoulder_lift     17.842    54.831    36.989
+elbow_flex       -60.015   -26.759    33.256
+wrist_flex        69.968    93.165    23.196
+wrist_roll       -24.553   -10.889    13.664
+gripper            1.388    18.366    16.977
+
+K = 13
+joint                min       max    spread
+shoulder_pan      29.390    39.786    10.396
+shoulder_lift     17.842    56.435    38.592
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.165    23.196
+wrist_roll       -24.553   -10.889    13.664
+gripper            1.388    18.366    16.977
+
+K = 14
+joint                min       max    spread
+shoulder_pan      29.390    39.786    10.396
+shoulder_lift     17.842    56.435    38.592
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.165    23.196
+wrist_roll       -25.315   -10.889    14.425
+gripper            1.388    18.366    16.977
+
+K = 15
+joint                min       max    spread
+shoulder_pan      29.390    39.786    10.396
+shoulder_lift     17.842    56.435    38.592
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.165    23.196
+wrist_roll       -25.315   -10.889    14.425
+gripper            1.388    18.366    16.977
+
+K = 16
+joint                min       max    spread
+shoulder_pan      29.390    39.786    10.396
+shoulder_lift     17.842    56.435    38.592
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.165    23.196
+wrist_roll       -25.315   -10.889    14.425
+gripper            1.388    18.366    16.977
+
+K = 17
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     17.842    56.435    38.592
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -25.315   -10.889    14.425
+gripper            1.388    18.366    16.977
+
+K = 18
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     17.842    56.435    38.592
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -25.315   -10.889    14.425
+gripper            1.388    18.366    16.977
+
+K = 19
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     17.842    56.435    38.592
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -25.315   -10.889    14.425
+gripper            1.388    18.366    16.977
+
+K = 20
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     17.842    56.435    38.592
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -25.315   -10.889    14.425
+gripper            1.388    18.366    16.977
+
+K = 25
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     17.842    56.435    38.592
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -25.315   -10.889    14.425
+gripper            1.388    18.366    16.977
+
+K = 30
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     17.842    56.435    38.592
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -25.315   -10.889    14.425
+gripper            1.388    18.366    16.977
+
+K = 35
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     16.572    56.435    39.862
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -25.315   -10.889    14.425
+gripper            1.388    18.366    16.977
+
+K = 40
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     16.572    57.011    40.439
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -26.904   -10.889    16.015
+gripper            1.388    18.366    16.977
+
+K = 45
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     16.572    57.011    40.439
+elbow_flex       -60.625   -26.759    33.866
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -26.904   -10.889    16.015
+gripper            1.388    18.366    16.977
+
+K = 50
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     16.572    57.011    40.439
+elbow_flex       -60.625   -25.681    34.945
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -26.904   -10.889    16.015
+gripper            1.388    18.366    16.977
+
+K = 55
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     15.548    58.215    42.667
+elbow_flex       -60.814   -25.601    35.213
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -26.904   -10.889    16.015
+gripper            1.360    18.366    17.006
+
+K = 60
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     15.548    58.215    42.667
+elbow_flex       -60.814   -25.601    35.213
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -26.904   -10.322    16.583
+gripper            1.360    18.366    17.006
+
+K = 65
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     15.548    58.215    42.667
+elbow_flex       -60.814   -25.601    35.213
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -26.904   -10.322    16.583
+gripper            1.360    18.366    17.006
+
+K = 70
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     15.548    58.215    42.667
+elbow_flex       -60.814   -25.601    35.213
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -27.182   -10.322    16.861
+gripper            1.360    18.366    17.006
+
+K = 75
+joint                min       max    spread
+shoulder_pan      29.390    41.512    12.123
+shoulder_lift     15.548    58.236    42.688
+elbow_flex       -60.814   -25.601    35.213
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -27.182   -10.322    16.861
+gripper            1.360    18.366    17.006
+
+K = 80
+joint                min       max    spread
+shoulder_pan      28.726    41.512    12.786
+shoulder_lift     15.548    58.236    42.688
+elbow_flex       -60.814   -25.601    35.213
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -27.182   -10.322    16.861
+gripper            1.360    18.366    17.006
+
+K = 85
+joint                min       max    spread
+shoulder_pan      28.726    41.512    12.786
+shoulder_lift     15.548    58.236    42.688
+elbow_flex       -60.814   -25.601    35.213
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -27.182   -10.322    16.861
+gripper            1.360    18.366    17.006
+
+K = 90
+joint                min       max    spread
+shoulder_pan      28.726    41.512    12.786
+shoulder_lift     15.548    58.236    42.688
+elbow_flex       -60.814   -25.601    35.213
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -27.182   -10.322    16.861
+gripper            1.360    18.366    17.006
+
+K = 95
+joint                min       max    spread
+shoulder_pan      28.726    43.714    14.988
+shoulder_lift     15.548    58.236    42.688
+elbow_flex       -60.814   -25.601    35.213
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -27.182   -10.322    16.861
+gripper            1.360    18.366    17.006
+
+K = 100
+joint                min       max    spread
+shoulder_pan      28.726    43.714    14.988
+shoulder_lift     15.548    58.236    42.688
+elbow_flex       -60.814   -25.601    35.213
+wrist_flex        69.968    93.872    23.904
+wrist_roll       -27.182   -10.322    16.861
+gripper            1.360    19.596    18.236
+
+K = 150
+joint                min       max    spread
+shoulder_pan      28.726    43.714    14.988
+shoulder_lift     15.548    58.236    42.688
+elbow_flex       -60.814   -24.308    36.506
+wrist_flex        68.301    93.872    25.571
+wrist_roll       -27.819    -8.651    19.168
+gripper            1.360    19.596    18.236
+
+K = 200
+joint                min       max    spread
+shoulder_pan      28.726    43.714    14.988
+shoulder_lift     15.548    58.236    42.688
+elbow_flex       -63.338   -22.407    40.931
+wrist_flex        65.971    93.872    27.901
+wrist_roll       -28.558    -8.651    19.906
+gripper            1.041    20.543    19.502
+
+K = 250
+joint                min       max    spread
+shoulder_pan      28.726    43.714    14.988
+shoulder_lift     14.057    59.937    45.880
+elbow_flex       -63.338   -22.407    40.931
+wrist_flex        65.971    95.950    29.978
+wrist_roll       -28.558    -8.651    19.906
+gripper            1.041    20.543    19.502
+
+K = 300
+joint                min       max    spread
+shoulder_pan      28.624    43.714    15.090
+shoulder_lift     14.057    60.629    46.571
+elbow_flex       -65.031   -22.407    42.624
+wrist_flex        65.971    95.950    29.978
+wrist_roll       -28.558    -8.651    19.906
+gripper            1.041    20.543    19.502
+
+K = 350
+joint                min       max    spread
+shoulder_pan      28.494    43.714    15.220
+shoulder_lift     12.211    60.629    48.417
+elbow_flex       -65.031   -22.407    42.624
+wrist_flex        65.971    95.950    29.978
+wrist_roll       -28.558    -8.651    19.906
+gripper            1.041    20.543    19.502
+
+K = 400
+joint                min       max    spread
+shoulder_pan      27.947    43.714    15.767
+shoulder_lift     12.211    60.629    48.417
+elbow_flex       -65.890   -22.407    43.484
+wrist_flex        65.971    95.950    29.978
+wrist_roll       -28.558    -8.651    19.906
+gripper            1.041    21.428    20.387
+
+K = 450
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.629    48.417
+elbow_flex       -65.890   -22.407    43.484
+wrist_flex        65.971    95.950    29.978
+wrist_roll       -28.558    -8.651    19.906
+gripper            1.041    21.428    20.387
+
+K = 500
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.629    48.417
+elbow_flex       -65.890   -21.802    44.089
+wrist_flex        65.971    95.950    29.978
+wrist_roll       -28.558    -8.651    19.906
+gripper            1.041    21.428    20.387
+
+K = 550
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.629    48.417
+elbow_flex       -65.890   -21.802    44.089
+wrist_flex        64.191    95.950    31.758
+wrist_roll       -28.558    -8.651    19.906
+gripper            1.041    21.428    20.387
+
+K = 600
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.629    48.417
+elbow_flex       -65.890   -21.802    44.089
+wrist_flex        64.191    95.950    31.758
+wrist_roll       -28.558    -8.651    19.906
+gripper            1.041    21.428    20.387
+
+K = 650
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.629    48.417
+elbow_flex       -65.890   -21.802    44.089
+wrist_flex        64.191    95.950    31.758
+wrist_roll       -28.558    -8.651    19.906
+gripper            1.041    21.428    20.387
+
+K = 700
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.629    48.417
+elbow_flex       -66.326   -21.802    44.525
+wrist_flex        64.191    95.950    31.758
+wrist_roll       -28.838    -8.566    20.272
+gripper            1.041    21.428    20.387
+
+K = 750
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.630    48.418
+elbow_flex       -66.326   -21.802    44.525
+wrist_flex        64.191    95.950    31.758
+wrist_roll       -28.838    -8.566    20.272
+gripper            1.041    21.428    20.387
+
+K = 800
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.630    48.418
+elbow_flex       -66.326   -21.802    44.525
+wrist_flex        64.191    95.950    31.758
+wrist_roll       -28.972    -6.351    22.621
+gripper            1.041    21.428    20.387
+
+K = 850
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.630    48.418
+elbow_flex       -66.326   -21.802    44.525
+wrist_flex        64.191    95.950    31.758
+wrist_roll       -28.972    -6.351    22.621
+gripper            1.041    21.428    20.387
+
+K = 900
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.630    48.418
+elbow_flex       -66.326   -21.802    44.525
+wrist_flex        64.191    95.950    31.758
+wrist_roll       -28.972    -6.351    22.621
+gripper            1.041    21.428    20.387
+
+K = 950
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.630    48.418
+elbow_flex       -66.326   -21.462    44.865
+wrist_flex        64.191    95.950    31.758
+wrist_roll       -28.972    -6.351    22.621
+gripper            1.041    21.428    20.387
+
+K = 1000
+joint                min       max    spread
+shoulder_pan      26.792    43.714    16.923
+shoulder_lift     12.211    60.630    48.418
+elbow_flex       -66.326   -21.462    44.865
+wrist_flex        64.191    95.950    31.758
+wrist_roll       -29.585    -6.351    23.234
+gripper            1.041    21.428    20.387
+

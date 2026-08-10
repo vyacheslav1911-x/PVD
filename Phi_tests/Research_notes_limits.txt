@@ -1,0 +1,189 @@
+==============================================================================
+DIAGNOSTIC PASS: why S_torque = 0, and what limits the two logs can support
+==============================================================================
+Read-only pass. No scorer or existing script was modified. New file: limits.py.
+Env: /home/g/miniconda3/envs/lerobot_v6/bin/python
+
+
+------------------------------------------------------------------------------
+PART A -- WHY IS S_torque IDENTICALLY ZERO?
+------------------------------------------------------------------------------
+CAUSE: neither (a) nor (b), and not a coding bug -- the THRESHOLD IS
+UNREACHABLE. Closest to option (c); the line is
+    score_trajectories.py:68    TAU_MAX = np.full(6, 3.0)
+
+(a) RULED OUT -- the arm is not massless. Total mass 0.485006 kg.
+    joint          mass (kg)   lever |c| (m)   trace(I) (kg m^2)
+    Rotation        0.100006      0.039810       1.888e-04
+    Pitch           0.103000      0.092096       3.306e-04
+    Elbow           0.104000      0.099813       3.339e-04
+    Wrist_Pitch     0.079000      0.047766       8.322e-05
+    Wrist_Roll      0.087000      0.025189       1.054e-04
+    Jaw             0.012000      0.035714       1.379e-05
+    No zero masses, no zero inertia tensors.
+    nq = nv = 6, njoints = 7 (incl. universe).
+    order: [Rotation, Pitch, Elbow, Wrist_Pitch, Wrist_Roll, Jaw]
+    model.gravity.linear = [0, 0, -9.81]   (correct)
+
+    Gravity torque is live:
+      zero configuration          max|tau| = 0.5386 N.m
+      arm extended horizontally   max|tau| = 0.4170 N.m
+      arm tucked                  max|tau| = 0.1171 N.m
+
+(b) RULED OUT, but not as framed. The URDF limits are present and finite:
+      effortLimit        = [10, 10, 10, 10, 10, 10]
+      velocityLimit      = [10, 10, 10, 10, 10, 10]
+      lowerPositionLimit = [-1.9199 -1.7453 -1.7453 -1.6581 -2.7925 -0.1745]
+      upperPositionLimit = [ 1.9199  1.7453  1.5708  1.6581  2.7925  1.7453]
+    They are not zero/inf/missing. And the scorer NEVER READS effortLimit --
+    it compares against its own hardcoded 3.0. So the ratio is not degenerate.
+
+THE ACTUAL MECHANISM. s_tau = sum max(0, (|tau| - 3.0)/3.0), and 3 N.m is out
+of reach for a 0.485 kg arm:
+    max |gravity torque|, 20k random poses in the joint box : 0.8627 N.m (Pitch)
+    max |RNEA| at the scorer's own placeholders (qdot=3, qddot=20) : 1.7687 N.m
+        -> 59.0% of TAU_MAX
+    max |RNEA| on the ACTUAL recorded motion:
+        record_run1  (smolvla) per joint [0.1753 0.9978 0.5008 0.0621 0.0016 0.0022]
+                     peak 0.9978 N.m = 33.3% of TAU_MAX -> S_torque = 0.000000
+        record_pi05_run1       per joint [0.1273 0.6662 0.4532 0.0899 0.0018 0.0029]
+                     peak 0.6662 N.m = 22.2% of TAU_MAX -> S_torque = 0.000000
+
+The term never fired and never could. 3 N.m is the STS3215 STALL torque -- a
+correct actuator spec applied as if it were a trajectory constraint, on an arm
+whose worst-case demand is under 1 N.m. It was passing VACUOUSLY, not passing.
+
+
+------------------------------------------------------------------------------
+PART B -- WHAT LIMITS CAN THE EXISTING LOGS SUPPORT?
+------------------------------------------------------------------------------
+SCHEMA (identical in both files, 852 / 802 ticks x 29 columns):
+  scalars   step, t_obs, t_cmd, dt, chunk_start
+  cmd_*     policy command             <- what Phi scores
+  sent_*    after the safety cap       <- what actually reached the servos
+  pos_*     achieved Present_Position
+  velraw_*  raw servo velocity register
+
+A VELOCITY COLUMN EXISTS (velraw_*) BUT IS UNUSABLE: integer-valued, only 50
+(run1) / 53 (pi05) distinct levels over the whole run, and zero 18-47% of the
+time depending on joint. Velocity is therefore DIFFERENTIATED from pos_.
+Acceleration must be DOUBLE-differentiated; there is no acceleration source.
+
+PROVENANCE -- THE "ACT" LABEL WAS WRONG, AND IT WAS MY ERROR.
+  Phi_tests/recorded trajectories/record_run1.csv is BYTE-IDENTICAL
+  (md5 52886d529f222243ce4ad10eb40f97ba) to pvd_logs/record_run1.csv.
+  validate_spos_sacc.py:23 tags that file "smolvla";
+  Research_notes.txt:119 documents it as "One SmolVLA rollout on the physical
+  SO-101 (qualia smolvla checkpoint), 852 steps at ~30 Hz".
+  The string "ACT" appears NOWHERE in the repo outside files I wrote. I
+  introduced it and it propagated.
+  CORRECT LABEL: record_run1 = SmolVLA, record_pi05_run1 = pi0.5.
+  STILL CARRYING THE WRONG LABEL (left untouched, no-modify instruction):
+  sparc_compare.py and Research_notes_sparc.txt.
+
+MASKING (validate_*.py conventions, applied on the uniform grid): startup
+(<25 ticks) plus any sample inside a dt > 0.06 s gap, dilated by the derivative
+stencil half-width so no stencil straddles a discard.
+  smolvla: 19 gaps, 227/900 samples dropped (25.2%), 673 usable
+  pi0.5  :          197/905 dropped (21.8%), 708 usable
+
+VELOCITY, p99 |qdot| in rad/s (savgol 9/4), reported per run, never pooled:
+  joint            smolvla   pi0.5   URDF velLim  placeholder  max/placeholder
+  shoulder_pan       0.817   1.345      10.0          3.0          44.8%
+  shoulder_lift      1.609   1.521      10.0          3.0          53.6%
+  elbow_flex         1.305   1.562      10.0          3.0          52.1%
+  wrist_flex         0.744   1.189      10.0          3.0          39.6%
+  wrist_roll         1.463   1.471      10.0          3.0          49.0%
+  gripper            1.235   1.597      10.0          3.0          53.2%
+
+Direction asymmetry is real but modest, e.g. smolvla shoulder_lift 1.618 rad/s
+extending vs 1.022 retracting; elbow_flex 1.515 vs 1.285. Full per-direction
+50/95/99/99.5/max tables were produced for both runs and both derivatives.
+
+ESTIMATOR SENSITIVITY -- THE SPECIFIED TEST PASSES AND IS MISLEADING.
+  savgol(9,4) vs plain central difference, 99th percentile: agreement within
+  7.3% on BOTH qdot and qddot, i.e. well inside the 20% bar.
+  BUT sweeping the savgol window 5 -> 17 moves the qddot p99 by 40-186% on
+  EVERY joint of BOTH runs:
+      smolvla  wrist_flex   22.09 -> 4.57 rad/s^2   (186% spread)
+      smolvla  shoulder_pan 15.12 -> 4.91           (120%)
+      pi0.5    wrist_flex   15.99 -> 7.36           (104%)
+  Both estimators have similar effective bandwidth, so they agree with each
+  other while both report the FILTER rather than the arm.
+  => ACCELERATION IS UNRELIABLE. Flagged despite passing the test as specified.
+  Velocity survives the same sweep at <=5% on joints that actually moved,
+  failing only where a joint barely moved (smolvla shoulder_pan 25.5%,
+  wrist_flex 25.0%, gripper 37.7%; all six pi0.5 joints <= 9.6%).
+
+Q1 -- IS max_relative_target ACTIVE? YES on commands, NO on achieved motion.
+  cmd_ != sent_ on 96/852 smolvla ticks (11.3%) and 145/802 pi0.5 ticks (18.1%).
+  On clipped entries |sent - pos| sits at median 10.35 deg -- the hard edge.
+  Commanded steps reach 50.09 deg (26.18 rad/s implied) vs the cap's
+  10 deg/tick = 5.23 rad/s.
+  BUT achieved per-tick |delta pos| peaks at 3.25 deg (smolvla) / 3.34 (pi0.5)
+  = 33% of the cap, with EXACTLY ZERO samples within 5% of it.
+  => The wrapper truncates what is ASKED FOR; the servo limits what HAPPENS.
+     pos_-derived velocity measures the ARM, not the wrapper. It is also
+     SATURATING evidence: the arm was repeatedly commanded 3-8x beyond what it
+     delivered and still topped out near 1.6 rad/s, so that ceiling is close to
+     real capability rather than mere timidity.
+
+Q2 -- DO THE RUNS IMPLY DIFFERENT LIMITS? Yes, per joint, no consistent winner.
+  pi0.5 is 65% higher on shoulder_pan (1.345 vs 0.817) and 60% on wrist_flex
+  (1.189 vs 0.744); smolvla is slightly higher on shoulder_lift. Neither run
+  bounds the other, so each per-joint value is a FLOOR and the elementwise max
+  across runs is the least-bad estimate.
+
+Q3 -- EMPIRICAL vs STATED LIMITS. Empirical p99 is 40-54% of the 3.0 rad/s
+  placeholder and 7-16% of the URDF's 10 rad/s. Both stated limits sit above
+  anything the arm does, so -- exactly like S_torque -- S_vel CANNOT FIRE on
+  real motion either.
+
+NO HELD-OUT SET. Two rollouts, one per policy. Any limit estimated here and
+then used to score these same rollouts is CIRCULAR. Recorded in the limits.py
+docstring and returned as floor_only=True on every empirical entry.
+
+
+------------------------------------------------------------------------------
+PART C -- DELIVERABLE: Phi_tests/limits.py
+------------------------------------------------------------------------------
+resolve_limits(model, rollouts=None, user_config=None) -> dict
+  {joint: {qd_max, qdd_max, tau_max}}, each {"value", "source", ...} with
+  source in user | urdf | empirical | unresolved.
+
+DESIGN CALL WORTH REVIEW: the URDF is REJECTED as a source. effortLimit and
+velocityLimit are 10.0 on all six joints; identical values across joints are an
+authoring template, not a measurement, and accepting them is precisely the
+silent-default failure the brief forbids. _urdf_is_informative() refuses any
+vector that is uniform, non-positive or non-finite. Empirical estimates are
+additionally rejected when the p99 moves more than spread_tol (default 20%)
+across the smoothing sweep.
+
+Result against the real model and both logs:
+  joint            qd_max              qdd_max      tau_max
+  Rotation         unresolved          unresolved   unresolved
+  Pitch            1.610 (empirical)   unresolved   unresolved
+  Elbow            1.602 (empirical)   unresolved   unresolved
+  Wrist_Pitch      unresolved          unresolved   unresolved
+  Wrist_Roll       1.469 (empirical)   unresolved   unresolved
+  Jaw              unresolved          unresolved   unresolved
+
+Every unresolved entry carries a specific reason string. user_config overrides
+cleanly; with no rollouts and no config all eighteen entries return unresolved
+rather than defaulted (verified).
+
+
+------------------------------------------------------------------------------
+VERDICT: IS THIS GOOD ENOUGH TO DRIVE A TOPP-RA FEASIBILITY CHECK?
+------------------------------------------------------------------------------
+NO -- not yet. Velocity is usable on 3 of 6 joints, and only as a floor.
+Acceleration is not usable at all. Torque has no empirical route whatsoever.
+TOPP-RA needs a velocity AND an acceleration bound per joint, and it is most
+sensitive to the acceleration bound -- the one that swings by a factor of five
+depending on an arbitrary filter width. Running it now would produce a
+confidently-parameterised time-scaling built on a number that is mostly savgol
+bandwidth: the same failure mode as S_torque, one layer up.
+
+UNBLOCK: a single-joint ramp test per joint (drive to saturation, log at
+>= 200 Hz). That fixes velocity, acceleration, and the qdot_max calibration
+Research_notes.txt already flags -- in one session.

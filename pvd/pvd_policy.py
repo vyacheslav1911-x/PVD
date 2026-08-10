@@ -70,6 +70,7 @@ class PVDRuntime:
         self.mode = "selection"          # selection | projection(stub)
         self.threshold = 5.0             # scorer default; wrapper may override via --pvd.threshold
         self.policy_path = DEFAULT_POLICY_PATH   # wrapper overrides from --policy.path
+        self.explicit_dtype = False      # True iff the user passed --policy.dtype (respect it)
         self.log_path = None             # auto-timestamped if None
         self.kp = 300.0                  # projection tracker stiffness
         self.kd = None                   # projection tracker damping (None -> 2*sqrt(kp))
@@ -262,6 +263,48 @@ def _check_mode(rt):
         raise ValueError(f"PVD mode must be selection|projection, got {rt.mode!r}")
 
 
+def _ckpt_stored_dtype(path):
+    """Return the ``dtype`` string stored in the checkpoint's config.json, or None.
+
+    Offline-friendly: reads a local dir directly, else the HF cache (never downloads).
+    """
+    if not path:
+        return None
+    path = str(path)  # may arrive as a pathlib.Path; hf_hub_download needs a str repo_id
+    try:
+        if os.path.isdir(path):
+            cfg_file = os.path.join(path, "config.json")
+        else:
+            from huggingface_hub import hf_hub_download
+            cfg_file = hf_hub_download(path, "config.json", local_files_only=True)
+        with open(cfg_file) as f:
+            return json.load(f).get("dtype")
+    except Exception:  # noqa: BLE001 — best-effort; fall back to the parsed config's dtype
+        return None
+
+
+def _align_config_dtype(config):
+    """Align a pi0/pi05 config's dtype to the checkpoint's stored dtype.
+
+    Why: ``PI05Config.dtype`` (and pi0) default to ``"float32"``. When the policy is
+    selected by ``--policy.type=pi05 --policy.pretrained_path=…`` (rather than
+    ``--policy.path=…``), draccus builds the config from that default and does NOT read
+    the checkpoint's config.json, so a ~4B model is constructed in fp32 (~16.6 GB) and
+    OOMs a 16 GB GPU at ``self.model.to(cuda)`` — before any weights load. The weights
+    are actually bf16 (+fp32 vision) ≈ 9.35 GB. Constructing in the checkpoint's dtype
+    removes that redundant 2× allocation and matches the working ``--policy.path`` run.
+    A user-supplied ``--policy.dtype`` is always respected.
+    """
+    if PVD_RUNTIME.explicit_dtype or not hasattr(config, "dtype"):
+        return
+    stored = _ckpt_stored_dtype(getattr(config, "pretrained_path", None) or PVD_RUNTIME.policy_path)
+    if stored and stored != config.dtype:
+        print(f"[PVD] aligning policy dtype {config.dtype!r} -> {stored!r} to match the "
+              f"checkpoint (avoids fp32 double-VRAM OOM; pass --policy.dtype to override).",
+              file=sys.stderr)
+        config.dtype = stored
+
+
 _pvd_cls_cache: dict = {}
 
 
@@ -317,7 +360,18 @@ def make_pvd_policy_class(policy_type: str):
                 candidates = Base.predict_action_chunk(self, batch, **kwargs)
             return self._pvd_process(candidates, K, t0)
 
-        cls = type("PVDPi05Policy", (_PVDMixin, Base), {"predict_action_chunk": _hook})
+        # pi05's config.dtype defaults to fp32; align it to the checkpoint's dtype BEFORE
+        # construction so the 4B model isn't built in fp32 (~16.6 GB) and OOMs a 16 GB GPU.
+        # `.__func__(cls_, …)` keeps cls_ = the PVD subclass so `cls(config)` inside the
+        # stock loader still builds the PVD-hooked policy (not a bare PI05Policy).
+        def _from_pretrained(cls_, pretrained_name_or_path, *, config=None, **kw):
+            if config is not None:
+                _align_config_dtype(config)
+            return Base.from_pretrained.__func__(cls_, pretrained_name_or_path, config=config, **kw)
+
+        cls = type("PVDPi05Policy", (_PVDMixin, Base),
+                   {"predict_action_chunk": _hook,
+                    "from_pretrained": classmethod(_from_pretrained)})
 
     else:
         return None

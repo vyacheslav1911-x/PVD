@@ -1,0 +1,187 @@
+==============================================================================
+SPARC (spectral arc length) on recorded rollouts -- can lambda_S earn a Phi term?
+==============================================================================
+Data: Phi_tests/recorded trajectories/
+  record_run1.csv       ACT    852 ticks, 30.0 s, ~30 Hz
+  record_pi05_run1.csv  pi0.5  802 ticks, 30.2 s, ~30 Hz
+Both logged at irregular dt (median 33.4 ms, max 289/363 ms), so positions are
+interpolated onto a uniform grid before differentiating. Speed throughout is
+joint-space speed ||dq/dt||_2 over the 6 joints, deg/s.
+
+Scripts: sparc.py (metric), sparc_validate.py (step 3), sparc_compare.py
+(steps 4-5), validate_sparc_phi.py (step 6), rollout.py (shared loader),
+fft_speed.py (spectrum plots). Figures: speed_fft_record_run1.png,
+speed_fft_record_pi05_run1.png, sparc_compare.png.
+Run with /home/g/miniconda3/envs/lerobot_v6/bin/python.
+
+
+------------------------------------------------------------------------------
+1. SPECTRUM STEP REBUILT (fft_speed.py)
+------------------------------------------------------------------------------
+Was: Hann window, DC subtracted, amplitude-scaled to deg/s, axis to Nyquist.
+Now: no window, DC kept, nfft = 2**(ceil(log2(N)) + 4) = 16384, magnitude
+normalised by its own max, axis capped at 10 Hz -- i.e. SPARC preprocessing.
+
+Zero-padding interpolates but does not resolve: bin spacing is 0.0018 Hz while
+the true resolution is still fs/N = 0.033 Hz. Peaks are therefore reported only
+once per resolution cell, and the DC main lobe is skipped.
+
+The adaptive 5% cutoff already separates the two policies:
+                  5% cutoff      mean speed     peak speed
+   ACT             2.87 Hz        37.9 deg/s     156.1 deg/s
+   pi0.5           4.82 Hz        43.6 deg/s     175.7 deg/s
+
+
+------------------------------------------------------------------------------
+2-3. sparc(speed, fs) AND ITS SANITY TESTS
+------------------------------------------------------------------------------
+Implemented exactly as specified: Mf = |fft(speed, nfft)| normalised by its max;
+f = arange(0, fs, fs/nfft) kept to f <= 10; first/last index with Mf >= 0.05;
+df = diff(f_sel)/(f_sel[-1]-f_sel[0]); lambda_S = -sum(sqrt(df^2 + diff(Mf)^2)).
+
+Reference signals (fs = 30 Hz):
+   min-jerk bell, 1 s        lambda_S = -1.400     (target ~ -1.4)   OK
+   five bumps, 0% overlap    lambda_S = -3.354     (target ~ -3.4)   OK
+
+Invariance:
+   amplitude x10             delta +0.0000    OK
+   amplitude x0.01           delta +0.0000    OK
+   duration 3 s              delta +0.0041    OK
+   duration 0.5 s            delta -0.0001    OK
+   bumps x10                 delta +0.0000    OK
+   bumps stretched 3x        delta -0.0002    OK
+
+CORRECTION TO THE SPEC. -3.4 is NOT the score of five OVERLAPPING bumps -- it is
+the score of five bumps that just touch. The metric is monotone in overlap
+(bump width 0.4 s):
+   overlap 62%  ->  -1.795
+   overlap 50%  ->  -1.942
+   overlap 38%  ->  -2.358
+   overlap 25%  ->  -2.671
+   overlap  0%  ->  -3.354
+Heavy overlap merges the bumps into something the metric reads as nearly a
+single bell. The first attempt (62% overlap) scored -1.795, which looked like a
+failed test but was a mis-specified reference signal. sparc_validate.py now pins
+the reference at zero overlap and prints the sensitivity table alongside it, so
+the number is not mistaken for "any five bumps".
+
+
+------------------------------------------------------------------------------
+4-5. WINDOWED COMPARISON (sparc_compare.py)
+------------------------------------------------------------------------------
+Speed never returns to zero, so sliding windows, 29 per run at 2 s / 1 s hop.
+AUC = U / (n_a * n_b) = P(lambda_S(ACT) > lambda_S(pi0.5)); 0.5 = chance;
+AUC > 0.5 would mean ACT scores smoother.
+
+configuration                  median ACT           median pi0.5             p     AUC  AUC|speed
+2 s / 1 s hop                 -3.049 [-3.28,-2.39]  -2.585 [-2.97,-2.31]  0.2435  0.410     0.457
+1 s / 0.5 s hop               -2.487 [-2.78,-2.17]  -2.089 [-2.55,-1.90]  0.0010  0.325     0.358
+2 s / 1 s hop, HP 2 Hz        -7.726 [-8.66,-6.78]  -5.291 [-7.34,-4.01]  0.0003  0.220     0.208
+1 s / 0.5 s hop, HP 2 Hz      -4.601 [-5.10,-4.02]  -3.727 [-4.29,-3.13]  0.0000  0.238     0.225
+2 s / 2 s hop (independent)   -2.786 [-3.21,-2.41]  -2.447 [-2.73,-2.24]  0.0745  0.307     0.382
+
+The predicted failure happened: 2 s windows give AUC 0.410, p = 0.24, chance.
+Dropping to 1 s -> 0.325; high-passing above 2 Hz -> 0.220. The contingency
+worked.
+
+TWO EXTRA CONTROLS, NOT IN THE ORIGINAL PLAN, THAT CHANGE THE CONCLUSION.
+
+(a) Mean speed is a confound. lambda_S correlates with window mean speed at
+    rho = +0.53 (pooled, 2 s windows; +0.41 ACT / +0.52 pi0.5 within-run), and
+    pi0.5 simply moves faster (43.6 vs 37.9 deg/s). This is intrinsic to the
+    metric: normalising by the max (= DC for a speed profile) means a movement
+    with high mean speed and the same absolute ripple scores smoother.
+    Regressing window mean speed out of lambda_S moves the UNFILTERED rows
+    toward chance (0.410 -> 0.457; 0.307 -> 0.382), but leaves the HIGH-PASSED
+    rows alone (0.220 -> 0.208; 0.238 -> 0.225) -- after high-passing the two
+    runs have near-identical mean amplitude (9.0 vs 8.6 deg/s).
+
+(b) Window-length stability. Unfiltered AUC wanders 0.325-0.44 with p from
+    0.001 to 0.50 over windows of 0.8-2.5 s. High-passed sits at 0.18-0.30 with
+    every p < 0.005. (Note: "1 s" is ambiguous at fs = 29.94 -- 29 vs 30
+    samples moves the unfiltered AUC from 0.437 to 0.325. The high-passed
+    result does not have this sensitivity.)
+
+REPORTABLE DISCRIMINATION: AUC ~ 0.24, high-passed above 2 Hz, 1 s windows.
+Stable across window length and unaffected by the mean-speed control.
+
+DIRECTION IS THE SURPRISE: pi0.5 windows score SMOOTHER, the opposite of what
+the band-energy split suggested (pi0.5 holds 33% of its spectral energy in
+1-3 Hz vs ACT's 19%). Both are true. pi0.5 has ~57% more power in 1-10 Hz but
+it is concentrated in discrete lines (spectral flatness 0.136; top 5% of bins
+hold 44% of band power) while ACT's is broadband (flatness 0.299; 35%). SPARC
+penalises spectral BREADTH and RIPPLE, not power, so concentrated tremor scores
+smoother than diffuse tremor. Decide whether that is the behaviour the term
+should have -- it is a property of the metric, not an artefact of this data.
+
+WINDOW LENGTH CHANGES THE SIGN. Whole-rollout lambda_S runs the other way:
+ACT -6.03 vs pi0.5 -7.72. At 30 s the fine ripple structure is resolved and
+pi0.5's wider band (4.82 vs 2.87 Hz) dominates the arc length; at 1-2 s the
+resolution is 0.5-1 Hz and it is not. Window length is not a tuning knob here,
+it selects which quantity is being measured.
+
+Caveat on p-values: windows with 50% overlap share data, so p is
+anticonservative. The non-overlapping row (2 s / 2 s) is the honest check and
+gives p = 0.07 at n = 15 per group.
+
+
+------------------------------------------------------------------------------
+6. THE PHI DECISION (validate_sparc_phi.py)
+------------------------------------------------------------------------------
+Follows the validate_sacc_smoothness.py / validate_reanalysis.py precedent.
+lambda_S is computed from the COMMANDED speed profile, not the achieved motion,
+because Phi scores candidate chunks before execution -- same reason S_vel and
+S_acc are computed from cmd_. Outcomes from achieved motion: (a) mean
+|tracking error| with cmd_(t) vs pos_(t+L), L = 4 ticks; (b) mean |measured
+jerk| (savgol 3rd derivative of pos_). Startup ticks (<25) and dt > 0.06 masked,
+as in the earlier validations.
+
+Pooled over both rollouts, 2 s / 1 s windows, n = 58:
+
+   control                        vs |tracking error|    vs |measured jerk|
+   raw r                                +0.306                 +0.221
+   partial | commanded velocity         -0.118                 -0.036
+   partial | S_vel                      +0.220                 +0.123
+   partial | both                       -0.126                 -0.025
+
+At 1 s / 0.5 s windows (n = 116) the partial|both figures are -0.061 and -0.169.
+Across both window sizes and both rollouts individually the partials span
+-0.17 to +0.11 with inconsistent signs.
+
+VERDICT: lambda_S COLLAPSES under velocity control -- the same magnitude as the
+partial r ~ +0.01 that removed S_acc from the feasibility block. The raw
+correlations are also the WRONG SIGN (smoother lambda_S co-occurring with MORE
+tracking error), which is the mean-speed confound of section 5(a) reappearing:
+faster windows score smoother AND track worse. Recommendation: DROP the term.
+
+TWO BOUNDS ON THAT VERDICT.
+
+  * "R" is undefined. There is no term R anywhere in the repo -- PROJECTION.md
+    has Phi = S_pos + S_vel + S_acc + S_torque + S_cont, pvd_policy.py logs
+    those five, and no summary CSV carries an R column. The controls used here
+    are commanded velocity (the precedent control) and S_vel. If R was meant to
+    be S_torque, note the notes record S_torque = 0 identically for this arm,
+    so it would be a no-op control. Since lambda_S already collapses with fewer
+    controls, adding another can only push the partial further toward zero
+    unless R acts as a suppressor.
+
+  * n = 2 rollouts, one per policy, with overlapping windows. S_vel also fires
+    in only 10-21% of windows because it uses the scorer's placeholder
+    qdot_max = 3 rad/s (172 deg/s), which Research_notes.txt already flags as
+    un-calibrated. This is enough to justify dropping the term; it is not enough
+    to publish as a null result. A multi-rollout sweep with a measured qdot_max
+    would settle it.
+
+
+------------------------------------------------------------------------------
+ASIDE: WHAT NYQUIST BOUNDS HERE
+------------------------------------------------------------------------------
+fs ~ 29.94 Hz -> Nyquist 14.97 Hz. This is a property of the LOG, not the arm.
+Real motion above 15 Hz folds back to |f - 30k| (20 Hz -> 10 Hz, 29 Hz -> 1 Hz),
+so the broadband floor above ~2 Hz is an upper bound on true jitter, not a
+measurement of it. The task-level peaks (0.2-0.6 Hz) are 25x below Nyquist and
+are safe. The 1-3 Hz band where the two policies differ is well inside what
+30 Hz resolves, so that difference is real. Part of the high-frequency floor is
+also encoder quantisation amplified by differentiating position, not motion.
+Seeing above 15 Hz needs faster logging or a separate high-rate sensor; no
+reprocessing of these CSVs gets there.
